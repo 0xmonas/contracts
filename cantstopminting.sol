@@ -17,7 +17,7 @@ pragma solidity ^0.8.20;
 ╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝ ╚═════╝                   
                                                                            
                                                                                
-    "Desire is a machine, and the object of desire is another machine connected to it”.                                    
+    "Desire is a machine, and the object of desire is another machine connected to it".                                    
                                           
                   
 */
@@ -37,7 +37,7 @@ contract CantStopMinting is ERC721, Ownable, ReentrancyGuard, ERC2981 {
     uint256 public priceDivisor = 100;
     
     uint256 public currentTokenId = 0;
-    uint256 public activeListingId = 0;
+    // optimize - activeListingId removed
     uint256 public maxPerWallet = 50;
     bool public paused = false;
     bool public emergencyStop = false;
@@ -50,7 +50,7 @@ contract CantStopMinting is ERC721, Ownable, ReentrancyGuard, ERC2981 {
     }
     
     mapping(uint256 => TokenData) public tokens;
-    mapping(uint256 => bool) public isListed;
+    // optimize - isListed mapping removed
     
     event TokenMinted(uint256 indexed tokenId, uint256 price);
     event TokenPurchased(uint256 indexed tokenId, address indexed buyer, uint256 price);
@@ -59,18 +59,17 @@ contract CantStopMinting is ERC721, Ownable, ReentrancyGuard, ERC2981 {
     event EmergencyStop(bool status);
     
     constructor() ERC721("Cant Stop Minting", "BLOOD") Ownable(msg.sender) {
-        // Set default royalty to 10% (1000 basis points)
         _setDefaultRoyalty(msg.sender, 1000);
-        _mintAndList();
+        _mintAndList(0); // optimize - parameter added
     }
     
     function buy() external payable nonReentrant {
         require(!paused && !emergencyStop, "Contract is paused or stopped");
-        require(activeListingId > 0, "No active listing");
-        require(isListed[activeListingId], "Token not listed");
+        
+        uint256 tokenId = currentTokenId; // optimize - single storage read
+        require(tokenId > 0, "No active listing");
         require(walletMintCount[msg.sender] < maxPerWallet, "Wallet limit reached");
         
-        uint256 tokenId = activeListingId;
         uint256 price = getPrice(tokenId);
         require(msg.value >= price, "Insufficient payment");
         require(msg.value == price, "Exact payment required");
@@ -78,20 +77,18 @@ contract CantStopMinting is ERC721, Ownable, ReentrancyGuard, ERC2981 {
         walletMintCount[msg.sender]++;
         
         _transfer(address(this), msg.sender, tokenId);
-        isListed[tokenId] = false;
         
         emit TokenPurchased(tokenId, msg.sender, price);
         
         if (!emergencyStop) {
-            _mintAndList();
+            _mintAndList(tokenId); // optimize - memory parameter
         }
     }
     
-    function _mintAndList() private {
+    function _mintAndList(uint256 lastTokenId) private { // optimize - parameter added
         require(!emergencyStop, "Emergency stop active");
         
-        currentTokenId++;
-        uint256 newTokenId = currentTokenId;
+        uint256 newTokenId = lastTokenId + 1; // optimize - memory operation
         uint256 price = getPrice(newTokenId);
         
         tokens[newTokenId] = TokenData({
@@ -101,8 +98,7 @@ contract CantStopMinting is ERC721, Ownable, ReentrancyGuard, ERC2981 {
         
         _mint(address(this), newTokenId);
         
-        isListed[newTokenId] = true;
-        activeListingId = newTokenId;
+        currentTokenId = newTokenId; // optimize - single storage write
         
         emit TokenMinted(newTokenId, price);
     }
@@ -233,38 +229,27 @@ contract CantStopMinting is ERC721, Ownable, ReentrancyGuard, ERC2981 {
     }
     
     function emergencyPause() external onlyOwner {
-        paused = true;
-        if (activeListingId > 0) {
-            isListed[activeListingId] = false;
-        }
+        paused = true; // optimize - removed isListed manipulation
         emit EmergencyPause(true);
     }
     
     function emergencyUnpause() external onlyOwner {
         require(!emergencyStop, "Cannot unpause while emergency stopped");
-        paused = false;
-        if (activeListingId > 0) {
-            isListed[activeListingId] = true;
-        }
+        paused = false; // optimize - removed isListed manipulation
         emit EmergencyPause(false);
     }
     
     function emergencyStopAll() external onlyOwner {
         emergencyStop = true;
-        paused = true;
-        if (activeListingId > 0) {
-            isListed[activeListingId] = false;
-        }
+        paused = true; // optimize - removed isListed manipulation
         emit EmergencyStop(true);
     }
     
     function emergencyResumeAll() external onlyOwner {
         emergencyStop = false;
         paused = false;
-        if (activeListingId == 0 || !isListed[activeListingId]) {
-            _mintAndList();
-        } else {
-            isListed[activeListingId] = true;
+        if (currentTokenId == 0) { // optimize - simplified condition
+            _mintAndList(0);
         }
         emit EmergencyStop(false);
     }
@@ -290,11 +275,11 @@ contract CantStopMinting is ERC721, Ownable, ReentrancyGuard, ERC2981 {
     }
     
     function getCurrentPrice() external view returns (uint256) {
-        return getPrice(activeListingId);
+        return getPrice(currentTokenId); // optimize - direct access
     }
     
     function getActiveTokenId() external view returns (uint256) {
-        return activeListingId;
+        return currentTokenId; // optimize - direct access
     }
     
     function getRemainingMints(address wallet) external view returns (uint256) {
@@ -313,6 +298,11 @@ contract CantStopMinting is ERC721, Ownable, ReentrancyGuard, ERC2981 {
     
     function getEmergencyStatus() external view returns (bool isPaused, bool isStopped) {
         return (paused, emergencyStop);
+    }
+    
+    // optimize - new function to check if token is listed
+    function isTokenListed(uint256 tokenId) external view returns (bool) {
+        return tokenId == currentTokenId && tokenId > 0 && !paused && !emergencyStop;
     }
     
     function supportsInterface(bytes4 interfaceId) 
